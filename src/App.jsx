@@ -502,6 +502,15 @@ export default function App() {
   const [validationResults, setValidationResults] = useState(null);
   const [fieldQuery, setFieldQuery] = useState("");
   const [fieldExpanded, setFieldExpanded] = useState({});
+  // "production" | "sandbox" — controls which snapshot is loaded and which
+  // file admin "Save" downloads. Always defaults to Production on every load
+  // (no remember-across-sessions) so shared links are unambiguous.
+  const [env, setEnv] = useState("production");
+  const ENVS = [
+    { id: "production", label: "Production", accent: T.green },
+    { id: "sandbox",    label: "Sandbox",    accent: T.orange },
+  ];
+  const storageKeyFor = (e) => `data.${e}`;
 
   const DATA_KEYS = ["rules","conditions","chains","approvers","variables","approvals","groups","groupMembers","users","vpUsers"];
 
@@ -568,26 +577,36 @@ export default function App() {
   }
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      // Try shared storage first, fall back to embedded
+      setLoading(true);
+      // Reset admin-session state when switching envs so uploads and validation
+      // results don't leak across Production/Sandbox.
+      setUploadFiles({});
+      setValidationResults(null);
+      setSaveMsg(null);
       try {
-        const stored = await window.storage.get("approval_data_v2", true);
+        const stored = await window.storage.get(storageKeyFor(env), true);
+        if (cancelled) return;
         if (stored?.value) {
           const parsed = JSON.parse(stored.value);
           if (parsed?.data) {
             setData(parsed.data);
-            setDataSource({ type: "shared", timestamps: parsed.timestamps || {}, updatedBy: parsed.updatedBy || "" });
+            setDataSource({ type: "shared", timestamps: parsed.timestamps || {}, updatedBy: parsed.updatedBy || "", env });
             setLoading(false);
             return;
           }
         }
       } catch {}
+      if (cancelled) return;
       const d = await loadEmbeddedData();
+      if (cancelled) return;
       setData(d);
-      setDataSource({ type: "embedded", timestamps: {} });
+      setDataSource({ type: "embedded", timestamps: {}, env });
       setLoading(false);
     })();
-  }, []);
+    return () => { cancelled = true; };
+  }, [env]);
 
   function handleAdminFile(key) {
     return (e) => {
@@ -659,13 +678,14 @@ export default function App() {
     setSaving(true);
     setSaveMsg(null);
     try {
-      const payload = JSON.stringify({ data: merged, timestamps: newTimestamps, updatedBy: "admin", savedAt: ts });
-      await window.storage.set("approval_data_v2", payload, true);
+      const payload = JSON.stringify({ data: merged, timestamps: newTimestamps, updatedBy: "admin", savedAt: ts, env });
+      await window.storage.set(storageKeyFor(env), payload, true);
       setData(merged);
-      setDataSource({ type: "shared", timestamps: newTimestamps, updatedBy: "admin" });
+      setDataSource({ type: "shared", timestamps: newTimestamps, updatedBy: "admin", env });
       setUploadFiles({});
       setValidationResults(null);
-      setSaveMsg({ ok: true, text: `Saved to shared snapshot. All users will see this data.` });
+      const envLabel = ENVS.find((e) => e.id === env)?.label || env;
+      setSaveMsg({ ok: true, text: `Saved ${envLabel} snapshot locally — check your downloads for data.${env}.json, then commit it to public/ to publish to all viewers.` });
     } catch (err) {
       setSaveMsg({ ok: false, text: "Save failed: " + (err?.message || "storage error. Data may exceed 5MB limit.") });
     }
@@ -674,13 +694,14 @@ export default function App() {
 
   async function resetToEmbedded() {
     setSaving(true);
-    try { await window.storage.delete("approval_data_v2", true); } catch {}
+    try { await window.storage.delete(storageKeyFor(env), true); } catch {}
     const d = await loadEmbeddedData();
     setData(d);
-    setDataSource({ type: "embedded", timestamps: {} });
+    setDataSource({ type: "embedded", timestamps: {}, env });
     setUploadFiles({});
     setValidationResults(null);
-    setSaveMsg({ ok: true, text: "Reset to embedded fallback. All users will see the original data." });
+    const envLabel = ENVS.find((e) => e.id === env)?.label || env;
+    setSaveMsg({ ok: true, text: `${envLabel} reset to embedded fallback locally. To wipe the shared snapshot for everyone, delete public/data.${env}.json in the repo and redeploy.` });
     setSaving(false);
   }
 
@@ -1207,8 +1228,17 @@ export default function App() {
       <div style={{ maxWidth: 1140, margin: "0 auto" }}>
         {/* Header */}
         <div style={{ marginBottom: 28 }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 6 }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 6, flexWrap: "wrap" }}>
             <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: -0.5, background: `linear-gradient(135deg, ${T.text}, ${T.accentLight})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>Salesforce Advanced Approvals Map</h1>
+            {(() => {
+              const cur = ENVS.find((e) => e.id === env);
+              if (!cur) return null;
+              return (
+                <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 6, background: `${cur.accent}15`, border: `1px solid ${cur.accent}55`, color: cur.accent, fontWeight: 700, letterSpacing: 0.6, textTransform: "uppercase" }}>
+                  {cur.label}
+                </span>
+              );
+            })()}
           </div>
           <p style={{ color: T.textDim, fontSize: 13, letterSpacing: 0.3 }}>
             {data.rules.length} rules · {data.conditions.length} conditions · {data.chains.length} chains · {data.approvers.length} approvers
@@ -1227,10 +1257,38 @@ export default function App() {
         </div>
 
         {/* Navigation */}
-        <div style={{ display: "flex", gap: 4, marginBottom: 24, background: T.card, borderRadius: 12, padding: 5, flexWrap: "wrap", border: `1px solid ${T.border}` }}>
+        <div style={{ display: "flex", gap: 4, marginBottom: 24, background: T.card, borderRadius: 12, padding: 5, flexWrap: "wrap", border: `1px solid ${T.border}`, alignItems: "center" }}>
           {tabs.map(([k, l, accent]) => (
             <CardButton key={k} active={view === k} accent={accent} onClick={() => { setView(k); if (k === "quote" || k === "credit") { setSelectedRec(null); setExpFilter("all"); setExpExp({}); } }}>{l}</CardButton>
           ))}
+          {/* Env segmented control — pushed to the right inside the same tab bar */}
+          <div style={{ marginLeft: "auto", display: "flex", gap: 3, padding: 3, borderRadius: 8, background: T.bgAlt, border: `1px solid ${T.border}` }}>
+            {ENVS.map((e) => {
+              const active = env === e.id;
+              return (
+                <button
+                  key={e.id}
+                  onClick={() => setEnv(e.id)}
+                  title={`Switch to ${e.label} data`}
+                  style={{
+                    padding: "6px 14px", borderRadius: 6, border: "none", cursor: "pointer",
+                    fontSize: 11.5, fontWeight: 700, letterSpacing: 0.4,
+                    background: active ? e.accent : "transparent",
+                    color: active ? "#0a0e1a" : T.textDim,
+                    transition: "all 0.15s ease",
+                    display: "inline-flex", alignItems: "center", gap: 6,
+                  }}
+                >
+                  <span style={{
+                    width: 6, height: 6, borderRadius: "50%",
+                    background: active ? "#0a0e1a" : e.accent,
+                    boxShadow: active ? "none" : `0 0 8px ${e.accent}`,
+                  }} />
+                  {e.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {/* Quote / Credit Explainer */}

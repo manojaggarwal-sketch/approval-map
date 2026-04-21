@@ -3,38 +3,42 @@
  *
  * The original claude.ai artifact called `window.storage.get/set/delete(key, true)`
  * — a shared-across-viewers key/value store. We emulate that on a static host using
- * two tiers:
+ * two tiers per key:
  *
- *   1. A baked snapshot at BASE/data.json (the "shared" tier). Everyone who loads
- *      the page sees whatever is committed to public/data.json in the repo.
+ *   1. A baked snapshot at BASE/<key>.json (the "shared" tier). Everyone who loads
+ *      the page sees whatever is committed to public/<key>.json in the repo.
  *   2. localStorage (the per-browser tier). Admins can upload CSVs and preview
  *      them without committing; nothing is shared until the admin exports and
  *      commits the JSON.
  *
  * The admin "Save" path becomes a file download the admin can commit to the repo,
- * so shared state stays version-controlled.
+ * so shared state stays version-controlled. Filename = `<key>.json`, so callers
+ * drive the split between environments (data.production vs data.sandbox vs ...).
  */
 
-const SHARED_FILE = `${import.meta.env.BASE_URL || "/"}data.json`.replace(/\/+/g, "/");
+const BASE = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "") + "/";
 const LS_PREFIX = "approval_map::";
 
-// Cached shared snapshot. Populated lazily from the bundled/deployed data.json.
-let sharedSnapshot = undefined;
+// Per-key cache of the shared snapshot fetched from the deployed site.
+const sharedCache = new Map(); // key -> string | null
 
-async function loadSharedSnapshot() {
-  if (sharedSnapshot !== undefined) return sharedSnapshot;
+function sharedFileFor(key) {
+  return `${BASE}${key}.json`.replace(/\/+/g, "/");
+}
+
+async function loadSharedSnapshot(key) {
+  if (sharedCache.has(key)) return sharedCache.get(key);
   try {
-    const res = await fetch(SHARED_FILE, { cache: "no-store" });
+    const res = await fetch(sharedFileFor(key), { cache: "no-store" });
     if (!res.ok) {
-      sharedSnapshot = null;
+      sharedCache.set(key, null);
       return null;
     }
     const text = await res.text();
-    // Store the raw text — the app JSON.parse's it itself (matches original contract).
-    sharedSnapshot = text;
-    return sharedSnapshot;
+    sharedCache.set(key, text);
+    return text;
   } catch {
-    sharedSnapshot = null;
+    sharedCache.set(key, null);
     return null;
   }
 }
@@ -80,22 +84,25 @@ window.storage = {
     const localHit = local.get(key);
     if (localHit) return localHit;
 
-    const shared = await loadSharedSnapshot();
+    const shared = await loadSharedSnapshot(key);
     return shared ? { value: shared } : null;
   },
 
   async set(key, value, _shared) {
     // Save locally so the admin sees their change immediately.
     local.set(key, value);
+    // Bust the cache so a subsequent get() re-fetches the deployed file
+    // (in case the admin is iterating and deletes their local preview).
+    sharedCache.delete(key);
     // Trigger a download so the admin can commit the new snapshot to the repo.
-    // The filename matches the key so the admin knows where to place it
-    // (rename to data.json and drop into public/).
+    // Filename is `<key>.json` → drop it straight into public/<key>.json.
     downloadFile(`${key}.json`, value);
   },
 
   async delete(key, _shared) {
     local.delete(key);
+    sharedCache.delete(key);
     // We can't un-commit the deployed snapshot from the browser; the admin has
-    // to delete public/data.json and redeploy if they want a full wipe.
+    // to delete public/<key>.json and redeploy if they want a full wipe.
   },
 };

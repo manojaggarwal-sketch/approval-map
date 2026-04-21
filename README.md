@@ -9,11 +9,16 @@ SBAA approval rules, conditions, variables, chains, and approvers.
   `SBQQ__NetTotal__c`) and get every approval rule that touches it — directly
   (as a condition's tested field) or indirectly (through an approval variable
   whose aggregate or filter field matches).
+- **Production / Sandbox environments.** A segmented toggle sits on the right
+  of the tab bar. Each env has its own baked snapshot
+  (`public/data.production.json` and `public/data.sandbox.json`) and its own
+  localStorage preview slot. Admin uploads are scoped to whichever env is
+  currently selected. The app always opens on Production.
 - **Shared-storage model.** The original used claude.ai's `window.storage`
-  shared tier. Self-hosted, the app now loads a baked `public/data.json` on
+  shared tier. Self-hosted, the app loads the active env's baked JSON on
   startup (everyone sees the same data), and admin uploads are staged in
   `localStorage` + exported as a downloadable JSON the admin commits to the
-  repo. See *Updating the shared snapshot* below.
+  repo. See *Updating a shared snapshot* below.
 
 ## Running locally
 
@@ -42,26 +47,34 @@ original conversation is full and can't accept edits, the only way to keep a
 stable, updatable URL is self-hosting — the GitHub Pages URL you pick above is
 the permanent home going forward.
 
-## Updating the shared snapshot
+## Updating a shared snapshot
 
-The app looks for `public/data.json` on load. If present, every viewer sees
-that snapshot; if absent, the app falls back to the base64-embedded fallback
-compiled into the bundle.
+Each environment has its own shared snapshot:
+
+- Production: `public/data.production.json`
+- Sandbox: `public/data.sandbox.json`
+
+On load, the app fetches whichever file matches the active env. If that file is
+missing, it falls back to the base64-embedded fallback compiled into the bundle
+(same fallback for both envs — upload real data to differentiate them).
 
 To publish new data:
 
-1. Open the deployed site, go to the **Admin** tab, upload the refreshed CSVs
-   from your SOQL exports, and click *Save*. This:
-   - previews the data locally for you (localStorage),
-   - downloads an `approval_data_v2.json` file.
-2. Rename the downloaded file to `data.json` and drop it into `public/` in the
-   repo (easiest path: GitHub's web "Edit this file" button, or a local
-   `git add public/data.json && git commit && git push`).
-3. The GitHub Action redeploys in ~1 minute and every viewer sees the new data
-   on next page load.
+1. Open the deployed site.
+2. Flip the **tab-bar toggle** to the env you want to edit (Production or
+   Sandbox).
+3. Go to the **Admin** tab, upload the refreshed CSVs from your SOQL exports,
+   and click *Save*. This:
+   - previews the data locally for you (localStorage, scoped to that env),
+   - downloads a file named `data.production.json` or `data.sandbox.json`
+     (matching the current env).
+4. Drop the file into `public/` in the repo (easiest: GitHub's web "Edit this
+   file" button, or `git add public/data.<env>.json && git commit && git push`).
+5. The GitHub Action redeploys in ~1 minute and every viewer sees the new data
+   for that env on next page load.
 
-If you want to go back to the embedded fallback, delete `public/data.json` and
-push.
+To wipe a snapshot and fall back to the embedded data, delete the corresponding
+`public/data.<env>.json` and push.
 
 ## Project layout
 
@@ -72,10 +85,11 @@ approval-map-standalone/
 ├── package.json
 ├── vite.config.js                 # `base` driven by VITE_BASE env var
 ├── public/
-│   └── data.json                  # (optional) shared snapshot; commit to update
+│   ├── data.production.json       # (optional) Production snapshot; commit to update
+│   └── data.sandbox.json          # (optional) Sandbox snapshot; commit to update
 ├── src/
 │   ├── main.jsx                   # React entry; installs storage adapter first
-│   ├── storage.js                 # window.storage shim (fetch data.json + localStorage)
+│   ├── storage.js                 # window.storage shim (fetch data.<env>.json + localStorage)
 │   └── App.jsx                    # The ported component (~1800 lines)
 └── README.md
 ```
