@@ -1185,12 +1185,44 @@ export default function App() {
                     <CardButton key={k} active={expFilter === k} onClick={() => setExpFilter(k)}>{l}</CardButton>
                   ))}
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {filtR.map((r, ri) => {
-                    const sr = snapRule(r, selQ.record);
-                    return renderRuleDetail(sr, expExp, toggleExpKey, "live_" + ri);
-                  })}
-                </div>
+                {expFilter === "all" ? (() => {
+                  const trigR = filtR.filter((r) => r.triggered);
+                  const untrigR = filtR.filter((r) => !r.triggered);
+                  return (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      {trigR.map((r, ri) => {
+                        const sr = snapRule(r, selQ.record);
+                        return renderRuleDetail(sr, expExp, toggleExpKey, "live_t_" + ri);
+                      })}
+                      {untrigR.length > 0 && (
+                        <details style={{ marginTop: trigR.length ? 14 : 0 }}>
+                          <summary style={{
+                            cursor: "pointer", fontSize: 12, fontWeight: 700, letterSpacing: 0.4,
+                            color: T.textMuted, padding: "10px 14px", borderRadius: 8,
+                            background: T.card, border: `1px solid ${T.border}`,
+                            display: "flex", alignItems: "center", gap: 8,
+                          }}>
+                            <span style={{ color: T.green }}>✅</span>
+                            <span>Show {untrigR.length} rule{untrigR.length === 1 ? "" : "s"} that did not trigger</span>
+                          </summary>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+                            {untrigR.map((r, ri) => {
+                              const sr = snapRule(r, selQ.record);
+                              return renderRuleDetail(sr, expExp, toggleExpKey, "live_u_" + ri);
+                            })}
+                          </div>
+                        </details>
+                      )}
+                    </div>
+                  );
+                })() : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {filtR.map((r, ri) => {
+                      const sr = snapRule(r, selQ.record);
+                      return renderRuleDetail(sr, expExp, toggleExpKey, "live_" + ri);
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </>
