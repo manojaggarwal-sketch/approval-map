@@ -195,8 +195,29 @@ function evalCond(c, rec, vMap, qlData) {
 
 /* ── Rule Evaluation ── */
 function evalRule(rule, conds, rec, vMap, qlData) {
-  if (!conds.length) return { triggered: true, results: [], reason: "No conditions — matches all records", formulaBreakdown: null };
-  const results = conds.map((c) => evalCond(c, rec, vMap, qlData));
+  if (!conds.length) return { triggered: true, results: [], reason: "No conditions — matches all records", formulaBreakdown: null, usedIndices: null };
+  const results = conds.map((c, i) => {
+    const r = evalCond(c, rec, vMap, qlData);
+    r.index = Math.round(c["sbaa__Index__c"] || (i + 1));
+    // Attach variable definitions so the UI can explain what the variable computes,
+    // even when no Quote Lines CSV is uploaded (no live trace available).
+    const tvn = (c["sbaa__TestedVariable__r.Name"] || "").trim();
+    const fvn = (c["sbaa__FilterVariable__r.Name"] || "").trim();
+    const tv = tvn && vMap ? vMap[tvn] : null;
+    const fv = fvn && vMap ? vMap[fvn] : null;
+    const pickDef = (v) => v ? {
+      name: v.Name,
+      target: v["sbaa__TargetObject__c"],
+      aggFn: v["sbaa__AggregateFunction__c"],
+      aggField: v["sbaa__AggregateField__c"],
+      filtField: v["sbaa__FilterField__c"],
+      filtVal: v["sbaa__FilterValue__c"],
+      filtOp: v["sbaa__Operator__c"],
+    } : null;
+    r.testedVariable = pickDef(tv);
+    r.filterVariable = pickDef(fv);
+    return r;
+  });
   const cm = (rule["sbaa__ConditionsMet__c"] || "All").toLowerCase();
   const ac = rule["sbaa__AdvancedCondition__c"];
   let triggered = false;
@@ -234,7 +255,17 @@ function evalRule(rule, conds, rec, vMap, qlData) {
       };
     });
   }
-  return { triggered, results, reason: null, formulaBreakdown: fb };
+  // For Custom rules, capture which condition indices the formula actually references,
+  // so the UI can hide conditions that exist on the rule but aren't part of the formula.
+  let usedIndices = null;
+  if (cm === "custom" && ac) {
+    const us = [];
+    let re = /\b(\d+)\b/g, m;
+    while ((m = re.exec(ac)) !== null) us.push(parseInt(m[1]));
+    usedIndices = Array.from(new Set(us));
+  }
+
+  return { triggered, results, reason: null, formulaBreakdown: fb, usedIndices };
 }
 
 /* ── Admin Queries ── */
@@ -322,8 +353,19 @@ const CardButton = ({ active, onClick, children, accent }) => (
 );
 
 /* ── Render Helpers ── */
-function renderCondTable(results) {
+function renderCondTable(results, conditionsMet, usedIndices) {
   if (!results?.length) return null;
+  // For Custom rules, only show conditions whose index is referenced in the formula.
+  // Conditions that exist on the rule but aren't part of the formula don't affect
+  // the rule's triggered state and shouldn't appear in the verdict table.
+  const isCustom = (conditionsMet || "").toLowerCase() === "custom";
+  let display = results;
+  if (isCustom && usedIndices && usedIndices.length > 0) {
+    const used = new Set(usedIndices);
+    display = results.filter((r) => used.has(r.index));
+  }
+  // Sort by the actual sbaa__Index__c so row numbers line up with the formula breakdown.
+  display = _.sortBy(display, (r) => r.index ?? 0);
   const headers = ["#", "", "Field", "Op", "Expected", "Actual", "Verdict"];
   return (
     <div style={{ overflowX: "auto" }}>
@@ -333,13 +375,13 @@ function renderCondTable(results) {
             <th key={h} style={{ textAlign: "left", padding: "8px 10px", color: T.textDim, borderBottom: `1px solid ${T.border}`, fontWeight: 700, fontSize: 10, textTransform: "uppercase", letterSpacing: 0.8 }}>{h}</th>
           ))}</tr>
         </thead>
-        <tbody>{results.map((c, ci) => {
+        <tbody>{display.map((c, ci) => {
           const expD = !c.filterVal ? (c.rawOp === "not equals" ? "Not Blank" : c.rawOp === "equals" ? "Is Blank" : "(blank)") : c.filterVal;
           const vP = !c.filterVal && c.rawOp === "not equals" ? `Value "${c.actualVal}" is not blank` : !c.filterVal && c.rawOp === "equals" ? "Value is blank" : `Value ${c.op} ${c.filterVal} — matched`;
           const vF = !c.filterVal && c.rawOp === "not equals" ? "Value is blank" : !c.filterVal && c.rawOp === "equals" ? `Value "${c.actualVal}" is not blank` : `Value ${c.actualVal} does not satisfy ${c.op} ${c.filterVal || ""}`;
           return (
             <tr key={ci} style={{ borderBottom: `1px solid ${T.border}20` }}>
-              <td style={{ padding: "6px 10px", color: T.textDim, fontFamily: "monospace", fontSize: 11 }}>{ci + 1}</td>
+              <td style={{ padding: "6px 10px", color: T.textDim, fontFamily: "monospace", fontSize: 11 }}>{c.index ?? (ci + 1)}</td>
               <td style={{ padding: "6px 10px", fontSize: 16 }}>{c.pass ? <span style={{ color: T.green }}>✓</span> : <span style={{ color: T.red }}>✗</span>}</td>
               <td style={{ padding: "6px 10px", color: T.accentLight, fontFamily: "'JetBrains Mono', monospace", wordBreak: "break-all", maxWidth: 200, fontSize: 11 }}>{c.field}</td>
               <td style={{ padding: "6px 10px", color: T.yellow, fontFamily: "monospace", fontWeight: 700 }}>{c.op}</td>
@@ -350,6 +392,59 @@ function renderCondTable(results) {
           );
         })}</tbody>
       </table>
+    </div>
+  );
+}
+
+/* Variables Used — surfaces approval variable definitions referenced by this rule's
+ * conditions, so a user can understand what each tested/filter variable computes
+ * even when no Quote Lines CSV has been uploaded for live trace-back. */
+function renderVarDefs(results, usedIndices, conditionsMet) {
+  if (!results?.length) return null;
+  const isCustom = (conditionsMet || "").toLowerCase() === "custom";
+  let scope = results;
+  if (isCustom && usedIndices && usedIndices.length > 0) {
+    const used = new Set(usedIndices);
+    scope = results.filter((r) => used.has(r.index));
+  }
+  const seen = new Set();
+  const vars = [];
+  scope.forEach((c) => {
+    const add = (def, role) => {
+      if (!def || !def.name) return;
+      const k = def.name + "::" + role;
+      if (seen.has(k)) return;
+      seen.add(k);
+      vars.push({ ...def, role });
+    };
+    add(c.testedVariable, "Tested");
+    add(c.filterVariable, "Filter");
+  });
+  if (!vars.length) return null;
+  return (
+    <div style={{ background: T.cyanBg, border: `1px solid ${T.cyanBorder}`, borderRadius: 10, padding: 14, marginBottom: 12 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: T.cyan, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1.2 }}>Variables Used</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {vars.map((v, vi) => (
+          <div key={vi} style={{ fontSize: 12, lineHeight: 1.5 }}>
+            <span style={{ color: T.text, fontWeight: 700 }}>{v.name}</span>
+            <span style={{ color: T.textDim, marginLeft: 8, fontSize: 11 }}>{v.role} variable{v.target ? ` on ${v.target}` : ""}</span>
+            <div style={{ fontSize: 11, color: T.textMuted, marginTop: 4, marginLeft: 10, fontFamily: "'JetBrains Mono', monospace" }}>
+              <span style={{ color: T.yellow, fontWeight: 600 }}>{(v.aggFn || "—").toUpperCase()}</span>
+              <span> of </span>
+              <span style={{ color: T.accentLight }}>{v.aggField || "—"}</span>
+              {v.filtField && (
+                <>
+                  <span style={{ color: T.textDim }}> where </span>
+                  <span style={{ color: T.cyan }}>{v.filtField}</span>
+                  <span style={{ color: T.yellow }}> {v.filtOp || "="} </span>
+                  <span style={{ color: T.orange }}>"{v.filtVal != null ? v.filtVal : ""}"</span>
+                </>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -468,7 +563,8 @@ function renderRuleDetail(sr, exp, toggleFn, prefix) {
           )}
           {sr.reason && <div style={{ fontSize: 12, color: T.yellow, marginBottom: 10 }}>{sr.reason}</div>}
           {renderFormulaBreakdown(sr.formulaBreakdown)}
-          {renderCondTable(sr.results)}
+          {renderVarDefs(sr.results, sr.usedIndices, sr.conditionsMet)}
+          {renderCondTable(sr.results, sr.conditionsMet, sr.usedIndices)}
           {renderVarTraces(sr.results)}
         </div>
       )}
@@ -811,11 +907,13 @@ export default function App() {
       chainName: r.rule["sbaa__ApprovalChain__r.Name"], approverName: r.rule["sbaa__Approver__r.Name"],
       approverField: r.rule["sbaa__ApproverField__c"], conditionsMet: r.rule["sbaa__ConditionsMet__c"],
       advancedCondition: r.rule["sbaa__AdvancedCondition__c"], triggered: r.triggered,
-      reason: r.reason, formulaBreakdown: r.formulaBreakdown, routing,
+      reason: r.reason, formulaBreakdown: r.formulaBreakdown, usedIndices: r.usedIndices, routing,
       results: r.results ? r.results.map((c) => ({
         field: c.field, op: c.op, filterVal: c.filterVal, actualVal: c.actualVal,
         pass: c.pass, rawOp: c.rawOp, isVariable: c.isVariable,
         testedVarName: c.testedVarName, filterVarName: c.filterVarName,
+        index: c.index,
+        testedVariable: c.testedVariable, filterVariable: c.filterVariable,
         trace: c.trace ? { aggFn: c.trace.aggFn, aggField: c.trace.aggField, filtField: c.trace.filtField, filtVal: c.trace.filtVal, result: c.trace.result, contributing: (c.trace.contributing || []).map((l) => ({ name: l.name, num: l.num, val: l.val })) } : null,
         filterTrace: c.trace ? { aggFn: c.filterTrace?.aggFn, aggField: c.filterTrace?.aggField, result: c.filterTrace?.result } : null,
       })) : [],
