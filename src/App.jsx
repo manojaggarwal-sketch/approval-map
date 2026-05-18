@@ -588,6 +588,12 @@ export default function App() {
   const [quoteCSV, setQuoteCSV] = useState(null);
   const [qlCSV, setQLCSV] = useState(null);
   const [crCSV, setCRCSV] = useState(null);
+  // Inspector-style paste textareas — text is kept in state so it persists across
+  // re-renders, and on every change the text is re-parsed and fed into the same
+  // setter the file-upload path uses (setQuoteCSV/setQLCSV/setCRCSV).
+  const [pasteQuote, setPasteQuote] = useState("");
+  const [pasteQL, setPasteQL] = useState("");
+  const [pasteCR, setPasteCR] = useState("");
   const [expFilter, setExpFilter] = useState("all");
   const [selectedRec, setSelectedRec] = useState(null);
   const [expExp, setExpExp] = useState({});
@@ -958,6 +964,21 @@ export default function App() {
     r.readAsText(f);
   };
 
+  // Inspector-style paste: live-parse the textarea on every change and push the
+  // parsed records into the same CSV state the file-upload path uses. PapaParse's
+  // delimitersToGuess handles tab-paste from Excel/Sheets and comma-paste from CSV.
+  const handlePaste = (textSetter, dataSetter) => (e) => {
+    const text = e.target.value;
+    textSetter(text);
+    if (!text.trim()) { dataSetter(null); return; }
+    try {
+      const rows = parseCSV(text);
+      dataSetter(rows.length ? rows : null);
+    } catch {
+      dataSetter(null);
+    }
+  };
+
   const filteredRules = useMemo(() => {
     if (!data) return [];
     let r = data.rules;
@@ -1218,11 +1239,11 @@ export default function App() {
           ))}
         </div>
 
-        {/* Step 2: Upload */}
+        {/* Step 2: Upload or paste */}
         <div style={{ background: T.card, borderRadius: 12, border: `1px solid ${T.border}`, padding: 20, marginBottom: 18 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-            <h2 style={{ fontSize: 15, fontWeight: 700, color: T.cyan, margin: 0 }}>Step 2: Upload CSV results</h2>
-            {hasD && <button onClick={() => { if (mode === "quote") { setQuoteCSV(null); setQLCSV(null); } else setCRCSV(null); setSelectedRec(null); setExpExp({}); setExpFilter("all"); }} style={{ padding: "7px 16px", borderRadius: 8, border: `1px solid ${T.redBorder}`, cursor: "pointer", fontSize: 12, fontWeight: 700, background: T.redBg, color: T.red }}>Reset & Upload New</button>}
+            <h2 style={{ fontSize: 15, fontWeight: 700, color: T.cyan, margin: 0 }}>Step 2: Upload or paste CSV results</h2>
+            {hasD && <button onClick={() => { if (mode === "quote") { setQuoteCSV(null); setQLCSV(null); setPasteQuote(""); setPasteQL(""); } else { setCRCSV(null); setPasteCR(""); } setSelectedRec(null); setExpExp({}); setExpFilter("all"); }} style={{ padding: "7px 16px", borderRadius: 8, border: `1px solid ${T.redBorder}`, cursor: "pointer", fontSize: 12, fontWeight: 700, background: T.redBg, color: T.red }}>Reset</button>}
           </div>
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
             {mode === "quote" ? (
@@ -1243,6 +1264,54 @@ export default function App() {
                 <div style={{ fontSize: 13, fontWeight: 700, color: crCSV ? T.green : T.textMuted }}>{crCSV ? `✓ Credit Request (${crCSV.length} rows)` : "Upload Credit Request CSV"}</div>
               </label>
             )}
+          </div>
+
+          {/* Inspector-style paste — same downstream pipeline as the file upload.
+              Auto-detects tab (Excel/Sheets) vs comma (CSV) vs semicolon/pipe via
+              PapaParse's delimitersToGuess; first row = headers. */}
+          <div style={{ marginTop: 14, fontSize: 11, color: T.textDim, textAlign: "center", textTransform: "uppercase", letterSpacing: 1.5, fontWeight: 700 }}>— or paste data instead —</div>
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 10 }}>
+            {(mode === "quote"
+              ? [
+                  { label: "Quote Header",  text: pasteQuote, setText: setPasteQuote, setData: setQuoteCSV, data: quoteCSV },
+                  { label: "Quote Lines",   text: pasteQL,    setText: setPasteQL,    setData: setQLCSV,    data: qlCSV   },
+                ]
+              : [
+                  { label: "Credit Request", text: pasteCR,   setText: setPasteCR,    setData: setCRCSV,    data: crCSV   },
+                ]
+            ).map((p) => (
+              <details key={p.label} style={{ flex: "1 1 220px", minWidth: 220 }}>
+                <summary style={{
+                  cursor: "pointer", padding: "10px 14px", fontSize: 12, fontWeight: 700,
+                  color: T.textMuted, background: T.bgAlt, border: `1px solid ${T.border}`,
+                  borderRadius: 8, listStyle: "none", display: "flex", alignItems: "center", gap: 8,
+                }}>
+                  <span>📋 Paste {p.label}</span>
+                  {p.text.trim() && (
+                    p.data && p.data.length
+                      ? <span style={{ color: T.green, fontWeight: 600 }}>· ✓ {p.data.length} row{p.data.length === 1 ? "" : "s"}</span>
+                      : <span style={{ color: T.red, fontWeight: 600 }}>· ⚠ unparsed</span>
+                  )}
+                </summary>
+                <textarea
+                  value={p.text}
+                  onChange={handlePaste(p.setText, p.setData)}
+                  placeholder={`Paste tab- or comma-separated data here.\nFirst row = column headers.\nCopy from Salesforce Inspector, Workbench, Excel, or Google Sheets.`}
+                  spellCheck={false}
+                  style={{
+                    width: "100%", marginTop: 8, padding: 10, minHeight: 110,
+                    fontFamily: "'JetBrains Mono', 'SF Mono', monospace", fontSize: 11,
+                    background: "#060b16", color: T.green, border: `1px solid ${T.border}`,
+                    borderRadius: 8, resize: "vertical", lineHeight: 1.5, boxSizing: "border-box",
+                  }}
+                />
+                {p.text.trim() && p.data && p.data.length > 0 && (
+                  <div style={{ fontSize: 11, color: T.textDim, marginTop: 6 }}>
+                    Parsed {p.data.length} row{p.data.length === 1 ? "" : "s"} · {Object.keys(p.data[0]).length} columns
+                  </div>
+                )}
+              </details>
+            ))}
           </div>
         </div>
 
